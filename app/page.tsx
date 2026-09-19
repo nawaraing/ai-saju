@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { SajuForm, type SajuFormValues } from "@/components/SajuForm";
 import { SajuResultView } from "@/components/SajuResultView";
 import { parseSajuStream } from "@/lib/saju/stream";
@@ -59,6 +60,9 @@ export default function Home() {
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
           태어난 연·월·일·시로 사주를 계산하고, AI가 자연어로 풀이해 드려요.
         </p>
+        <Link href="/stats" className="mt-1 text-xs text-zinc-500 hover:underline">
+          음양오행 통계 보기 →
+        </Link>
       </header>
 
       {!result && <SajuForm onSubmit={handleSubmit} submitting={submitting} />}

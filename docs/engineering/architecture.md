@@ -2,7 +2,8 @@
 
 > 대화형 AI 사주 서비스의 기술 구현 설계 문서.
 > 제품 요구는 `service-plan.md`, 명리학 지식은 `domain-knowledge.md`,
-> 계산 엔진은 `saju-engine.md`, 해석 프롬프트는 `interpretation-prompt.md` 참고.
+> 계산 엔진은 `saju-engine.md`, 해석 프롬프트는 `interpretation-prompt.md`,
+> DB 스키마·정책은 `database.md` 참고.
 > 이 문서는 "어떻게(How)"를 다룬다.
 
 ---
@@ -17,7 +18,7 @@
 | 계산 엔진 | `saju-fortune` (npm) | 서버에서 실행 (검증 후 채택, `saju-engine.md`) |
 | LLM | **Google Gemini API** | 해석 담당 |
 | 배포 | Vercel | Next.js 친화적 |
-| DB | **이번 범위 제외** | 추후 추가 전제로 설계 (§6) |
+| DB | **Supabase** (Postgres) | 사주 결과(파생값)만 익명 저장, 상세는 `database.md` |
 
 ---
 
@@ -79,14 +80,16 @@ Next.js가 프론트와 서버를 함께 갖고 있어, 별도 백엔드 서버 
 ```
 /app
   /page.tsx                  # 입력 화면 (반응형)
+  /stats/page.tsx            # 음양오행 통계 화면 (Supabase 조회)
   /result/page.tsx           # 결과 화면 (또는 동일 페이지 내 상태 전환)
   /api
-    /saju/route.ts           # ① 계산 + ② Gemini 해석 (서버 전용)
+    /saju/route.ts           # ① 계산 + ② Gemini 해석 + ③ 결과 저장 (서버 전용)
 /lib
   /saju/                     # saju-fortune 호출 래퍼, 결과 매핑
   /gemini/                   # Gemini API 호출 클라이언트
   /prompt/                   # 해석 프롬프트 구성 (interpretation-prompt.md 기반)
-/components                  # 입력 폼, 결과 카드 등 UI
+  /supabase/                 # Supabase 클라이언트, 저장·통계 조회 함수 (database.md 기반)
+/components                  # 입력 폼, 결과 카드, 통계 뷰 등 UI
 /types                       # 공통 타입 (입력/계산결과/응답)
 .env.local                   # 비밀 키 (git 제외)
 ```
@@ -110,6 +113,8 @@ Next.js가 프론트와 서버를 함께 갖고 있어, 별도 백엔드 서버 
 ```
 # 서버 전용 (클라이언트 노출 금지)
 GEMINI_API_KEY=xxxxxxxx
+SUPABASE_URL=xxxxxxxx
+SUPABASE_ANON_KEY=xxxxxxxx
 
 # 공개 가능한 값만 NEXT_PUBLIC_ 사용
 # NEXT_PUBLIC_APP_NAME=...
@@ -123,26 +128,14 @@ GEMINI_API_KEY=xxxxxxxx
 
 ---
 
-## 6. 데이터베이스 (이번 범위 제외, 확장 대비)
+## 6. 데이터베이스
 
-> 요구: DB는 이번 계획에서 빠지되, 나중에 추가될 것을 염두.
+> 상세 스키마·SQL·RLS 정책은 `database.md` 참고. 여기서는 요약만 다룬다.
 
-### 이번 범위
-- **DB 없음.** 입력값은 요청 처리 중에만 메모리에서 사용하고 저장하지 않는다.
-  - `service-plan.md` §6 개인정보 원칙("영구 저장 안 함")과 일치.
-- 결과는 브라우저 상태로만 유지(새로고침 시 소멸). 필요 시 클라이언트 공유(캡처)로 대체.
-
-### 확장 대비 설계 (지금 지켜둘 것)
-나중에 DB를 붙일 때 구조를 갈아엎지 않도록, 지금부터 아래를 지킨다.
-
-- **계산/해석 로직을 저장소와 분리**: 로직이 DB 존재를 가정하지 않게 한다(저장은 나중에 얇게 얹는 계층).
-- **입력·계산결과·응답을 명확한 타입으로 정의**(`/types`): 훗날 그대로 테이블 스키마로 확장 가능.
-- **함수 경계 고정**: `계산(input) → result`, `해석(result) → text` 형태를 유지하면, 그 사이에 저장 단계만 삽입하면 된다.
-
-### 향후 DB 도입 시 예상 저장 대상 (참고)
-- 사용자 계정(로그인 도입 시)
-- 풀이 이력(재열람·구독 기능용)
-- ⚠️ 생년월일시는 민감정보 → 저장 시 암호화·보관정책·법적 고지 필요(도입 시점에 재검토).
+- **Supabase(Postgres)** 사용. 로그인 없이 익명으로 사주 계산 결과(파생값)만 저장한다.
+- 원문 생년월일시 등 민감정보는 저장하지 않는다 (`service-plan.md` §6, `database.md` §1).
+- 계산/해석 로직은 저장소를 모른다 — 저장은 `app/api/saju/route.ts`에 얇게 얹힌 부수효과 단계다.
+- 저장된 결과는 `/stats` 페이지에서 음양오행 통계로 집계해 보여준다.
 
 ---
 
@@ -153,9 +146,10 @@ GEMINI_API_KEY=xxxxxxxx
 1. **입력 검증**: 양력/음력, (음력 시)윤달 플래그, 생년월일, 시각(선택), 성별, 주제.
 2. **음력 → 양력 변환**(음력 입력 시): 검증된 만세력/라이브러리로 변환, 윤달 반영. (상세 `saju-engine.md`)
 3. **사주 계산**: `saju-fortune` 실행 → 여덟 글자·오행·십신·신강신약·용신 등 산출.
-4. **프롬프트 구성**: 계산 결과 + 해석 지침(`interpretation-prompt.md`)을 결합.
-5. **Gemini 호출**: 자연어 풀이 생성(스트리밍 권장).
-6. **응답 반환**: 계산 요약 + 해석 텍스트를 클라이언트로.
+4. **결과 저장**: 계산 결과(파생값)를 Supabase에 익명 기록 (부수효과, 실패해도 응답에 영향 없음. `database.md` §5).
+5. **프롬프트 구성**: 계산 결과 + 해석 지침(`interpretation-prompt.md`)을 결합.
+6. **Gemini 호출**: 자연어 풀이 생성(스트리밍 권장).
+7. **응답 반환**: 계산 요약 + 해석 텍스트를 클라이언트로.
 
 ### 예외 처리
 - 태어난 시간 미상 → 시주 미확정 플래그, 연·월·일 중심 보수적 풀이로 진행.
@@ -171,3 +165,5 @@ GEMINI_API_KEY=xxxxxxxx
 - [ ] 음력 변환 라이브러리 선정 (`saju-engine.md`와 연동)
 - [ ] `saju-fortune` 패키지 채택 확정 (검증 후)
 - [ ] 결과 공유(이미지 저장) 구현 방식
+
+> DB 관련 미결정 사항은 `database.md` §7으로 이관.
